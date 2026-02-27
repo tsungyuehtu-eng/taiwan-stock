@@ -1,5 +1,5 @@
 """
-台股查詢工具 - 雲端版（自動安裝 yfinance）
+台股查詢工具 - 雲端版（yfinance 強化版）
 """
 
 import http.server
@@ -9,51 +9,83 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 
-# 自動安裝 yfinance
-try:
-    import yfinance as yf
-except ImportError:
-    print("安裝 yfinance...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "yfinance"])
-    import yfinance as yf
+# 自動安裝套件
+for pkg in ['yfinance', 'requests']:
+    try:
+        __import__(pkg)
+    except ImportError:
+        print(f"安裝 {pkg}...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+
+import yfinance as yf
 
 PORT = int(os.environ.get('PORT', 8888))
 
 def get_stock_data(code, months):
-    ticker_tw  = f"{code}.TW"
-    ticker_two = f"{code}.TWO"
+    # 嘗試所有可能的代號格式
+    candidates = [
+        f"{code}.TW",    # 上市
+        f"{code}.TWO",   # 上櫃
+        f"^{code}",      # 指數
+    ]
+    # 補零：如果是 4 位數以下，嘗試補零到 4 位
+    if len(code) < 4:
+        padded = code.zfill(4)
+        candidates.insert(0, f"{padded}.TW")
+        candidates.insert(1, f"{padded}.TWO")
 
     end   = datetime.now()
-    start = end - timedelta(days=30 * months + 10)
+    start = end - timedelta(days=30 * months + 15)
 
-    for ticker_code in [ticker_tw, ticker_two]:
+    for ticker_code in candidates:
         try:
+            print(f"嘗試查詢：{ticker_code}")
             ticker = yf.Ticker(ticker_code)
-            hist   = ticker.history(start=start.strftime('%Y-%m-%d'),
-                                    end=end.strftime('%Y-%m-%d'))
-            if hist.empty:
+            hist = ticker.history(
+                start=start.strftime('%Y-%m-%d'),
+                end=end.strftime('%Y-%m-%d'),
+                auto_adjust=True
+            )
+
+            if hist is None or hist.empty:
+                print(f"  {ticker_code} 無資料")
                 continue
 
-            info = ticker.info
-            name = info.get('longName') or info.get('shortName') or code
-            name = name.replace(' Inc.', '').replace(' Inc', '').strip()
+            print(f"  {ticker_code} 取得 {len(hist)} 筆")
+
+            # 取名稱
+            name = code
+            try:
+                info = ticker.fast_info
+                name = getattr(info, 'name', None) or code
+            except:
+                pass
+            try:
+                full_info = ticker.info
+                name = full_info.get('longName') or full_info.get('shortName') or name
+                name = name.replace(' Inc.','').replace(' Inc','').strip()
+            except:
+                pass
 
             data = []
             for date, row in hist.iterrows():
-                data.append({
-                    'date':  date.strftime('%Y-%m-%d'),
-                    'open':  round(float(row['Open']),  2),
-                    'high':  round(float(row['High']),  2),
-                    'low':   round(float(row['Low']),   2),
-                    'close': round(float(row['Close']), 2),
-                    'vol':   round(int(row['Volume']) / 1000)
-                })
+                try:
+                    data.append({
+                        'date':  date.strftime('%Y-%m-%d'),
+                        'open':  round(float(row['Open']),  2),
+                        'high':  round(float(row['High']),  2),
+                        'low':   round(float(row['Low']),   2),
+                        'close': round(float(row['Close']), 2),
+                        'vol':   max(0, round(int(row['Volume']) / 1000))
+                    })
+                except:
+                    continue
 
             if data:
                 return {'code': code, 'name': name, 'data': data}
 
         except Exception as e:
-            print(f"嘗試 {ticker_code} 失敗：{e}")
+            print(f"  {ticker_code} 錯誤：{e}")
             continue
 
     return None
@@ -112,11 +144,13 @@ class StockHandler(http.server.BaseHTTPRequestHandler):
         try:
             result = get_stock_data(code, months)
             if not result:
-                self.send_json({'error': f'找不到 {code} 的資料，請確認股票代號'}, 404)
+                self.send_json({
+                    'error': f'找不到 {code} 的資料。請確認：\n1. 代號是否正確（如 2330、0050）\n2. 是否為上市或上櫃股票'
+                }, 404)
                 return
             self.send_json(result)
         except Exception as e:
-            self.send_json({'error': str(e)}, 500)
+            self.send_json({'error': f'查詢錯誤：{str(e)}'}, 500)
 
     def send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode('utf-8')
