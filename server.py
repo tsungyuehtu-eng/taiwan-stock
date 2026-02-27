@@ -1,17 +1,25 @@
 """
-台股查詢工具 - 雲端版（使用 yfinance，支援全球存取）
+台股查詢工具 - 雲端版（自動安裝 yfinance）
 """
 
 import http.server
 import json
 import os
+import subprocess
+import sys
 from datetime import datetime, timedelta
+
+# 自動安裝 yfinance
+try:
+    import yfinance as yf
+except ImportError:
+    print("安裝 yfinance...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "yfinance"])
+    import yfinance as yf
 
 PORT = int(os.environ.get('PORT', 8888))
 
 def get_stock_data(code, months):
-    import yfinance as yf
-
     ticker_tw  = f"{code}.TW"
     ticker_two = f"{code}.TWO"
 
@@ -123,4 +131,3 @@ if __name__ == '__main__':
     print(f'✅ 台股伺服器啟動，PORT={PORT}')
     server = http.server.ThreadingHTTPServer(('0.0.0.0', PORT), StockHandler)
     server.serve_forever()
-
